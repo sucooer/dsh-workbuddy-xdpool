@@ -4,6 +4,17 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.9.0 — fork 版：发布到自己的 npm scope
+
+本仓库是 [XDTrees/dsh-workbuddy-xdpool](https://github.com/XDTrees/dsh-workbuddy-xdpool) 的 fork，由 `sucooer` 维护并**独立发布**到 npm。
+
+- 包名从 `dsh-workbuddy-xdpool` 改为 **`@anyaer/dsh-workbuddy-xdpool`**。原包名归上游维护者所有，fork 无法在其下发布。
+- `repository` / `homepage` / `bugs` / README 徽章与安装命令全部指向本 fork。
+- 新增 `publishConfig.access: "public"`，保证 scoped 包不会因漏传 `--access public` 而被误发成私有包。
+- 发布通道不变：仍是 [`.github/workflows/release.yml`](.github/workflows/release.yml) 的 Trusted Publishing（OIDC），推 `v*` tag 即发布，无需 token 与 2FA 验证码。npm 侧的绑定为 `sucooer/dsh-workbuddy-xdpool` + 包 `@anyaer/dsh-workbuddy-xdpool`。
+
+> 上行同步：合并上游版本时，注意 `package.json` 的 `name`/`author`/`repository`/`publishConfig` 与两个 README 的安装命令要保留为 fork 版本。
+
 ## 1.8.1 — pi-ai 两头必须同代，这次钉死在安装期
 
 > 有反馈说升级之后每轮对话必崩：`Cannot read properties of undefined (reading 'length')` 加一个不可重试的 `PI_AI_ERROR`。上一版已经诊断出根因（同一条调用链上混着两代 pi-ai），但只做了「告警」。这次不再要求用户去改 profile。

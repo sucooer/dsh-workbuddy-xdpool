@@ -3,6 +3,7 @@
 ##
 ## 要点（改这个文件时别破坏）：
 ##   - 文件名必须与 npm 侧「Workflow filename」一致：release.yml
+##   - npm 侧的绑定为 sucooer/dsh-workbuddy-xdpool，包名 @anyaer/dsh-workbuddy-xdpool
 ##   - id-token: write 是 OIDC 的唯一硬要求，删掉就退化成需要 token
 ##   - registry-url 指向官方 registry（本机 .npmrc 默认是淘宝镜像，必须覆盖）
 ##   - contents: write 是建 Release 需要的：GitHub Release 与 tag 是两回事

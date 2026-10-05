@@ -17,9 +17,9 @@ Trusted Publishing 因此成为唯一无码可用的官方通道，也是 npm �
 
 ## 首次启用要做的两件事
 
-1. **npm 侧绑定**：npmjs.com → 该包 → Settings → **Trusted Publisher** →
-   选 **GitHub Actions**，填：
-   - Organization or user：`XDTrees`
+1. **npm 侧绑定**：npmjs.com → 该包（`@anyaer/dsh-workbuddy-xdpool`）→ Settings →
+   **Trusted Publisher** → 选 **GitHub Actions**，填：
+   - Organization or user：`sucooer`
    - Repository：`dsh-workbuddy-xdpool`
    - Workflow filename：`release.yml`
    - Environment name：留空
@@ -27,6 +27,11 @@ Trusted Publishing 因此成为唯一无码可用的官方通道，也是 npm �
      勾上 direct publish 才能一步到位发布）
 
 2. **GitHub 侧**：确认仓库的 Actions 有写权限（默认有），然后推送一个 tag 即可。
+
+> fork 注意：GitHub 对 fork 仓库的 `GITHUB_TOKEN` 默认是只读，且 fork 场景下
+> OIDC（`id-token: write`）有时会被平台限制。Actions 里若在换 token 那步报错，
+> 到 fork 仓库的 Settings → Actions → General 把 Workflow permissions 改成
+> 「Read and write permissions」再试。
 
 ## 发布一个新版本
 
