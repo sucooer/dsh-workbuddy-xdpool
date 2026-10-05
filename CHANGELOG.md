@@ -4,7 +4,7 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## 1.9.0 — fork 版：发布到自己的 npm scope
+## 1.9.1 — fork 版：发布到自己的 npm scope
 
 本仓库是 [XDTrees/dsh-workbuddy-xdpool](https://github.com/XDTrees/dsh-workbuddy-xdpool) 的 fork，由 `sucooer` 维护并**独立发布**到 npm。
 
