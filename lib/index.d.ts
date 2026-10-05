@@ -1,6 +1,7 @@
 import z from "@deepseek-ai/schemastery";
-import { Api, Model } from "@earendil-works/pi-ai";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
+import { Api, Model, createProvider } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { Context, Context as Context$1 } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 //#region src/task-events.d.ts
@@ -1686,6 +1687,17 @@ interface ModelSelection {
   contextBudgets?: Readonly<Record<string, number | undefined>>;
 }
 //#endregion
+//#region src/host-pi-ai.d.ts
+/** What the provider assembly needs from a pi-ai copy. */
+interface PiAiSurface {
+  createProvider: typeof createProvider;
+  openAICompletionsApi: typeof openAICompletionsApi;
+  /** Which copy this is, for the log line. */
+  source: 'host' | 'plugin';
+  /** The copy's version, when it could be read. */
+  version?: string;
+}
+//#endregion
 //#region src/shim.d.ts
 interface ShimLogger {
   info?(...args: unknown[]): void;
@@ -1725,6 +1737,18 @@ interface WorkBuddyAdapterOptions {
   ctx: Context$1;
   providerId?: string;
   displayName?: string;
+  /**
+   * Which pi-ai copy to assemble the provider with.
+   *
+   * The host adapter consumes this provider with ITS OWN generation, and two
+   * generations disagree about the terminal message — the mix fails every turn
+   * with a non-retryable `PI_AI_ERROR`. `choosePiAiSurface` returns the host's
+   * copy whenever the plugin's own import resolved to a different generation.
+   *
+   * Defaults to the plugin's own copy, which is correct whenever the two agree
+   * and is what keeps this function synchronous for the tests and the CLI.
+   */
+  piAi?: PiAiSurface;
 }
 /** What {@link createWorkBuddyAdapter} hands back. */
 interface WorkBuddyAdapter {

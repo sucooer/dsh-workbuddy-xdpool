@@ -24,3 +24,7 @@ release-body.md
 
 # Local deployment backups of lib/ (never commit these)
 _backup-lib-*/
+
+# `pnpm pack` 的产物：本地安装/验证用的，包里其实就是 lib/ 那份
+*.tgz
+.workbuddy/

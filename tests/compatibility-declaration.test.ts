@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = join(import.meta.dirname, '..')
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+  dependencies?: Record<string, string>
   engines?: Record<string, string>
   peerDependencies?: Record<string, string>
   version?: string
@@ -81,5 +82,26 @@ describe('the README points at the entry point that exists', () => {
   it('does not still claim adaptation to the 0.1.2 host alone', () => {
     expect(readme).not.toContain('已针对 DSH Desktop host `0.1.2` 适配')
     expect(readme).toContain('0.2.0')
+  })
+})
+
+describe('pi-ai is pinned to the host generation at install time', () => {
+  it('is a direct dependency, not a peer', () => {
+    // The regression this guards: as an OPTIONAL PEER, pi-ai resolved to
+    // whatever the profile happened to hoist. One neighbouring plugin pinning
+    // 0.82.1 was enough to move the plugin onto a different generation than the
+    // host adapter's 0.87, and every turn then failed with a non-retryable
+    // `PI_AI_ERROR`. A range can describe what a package tolerates; it cannot
+    // describe which copy the HOST resolved on that machine.
+    expect(pkg.dependencies?.['@earendil-works/pi-ai']).toBeDefined()
+    expect(pkg.peerDependencies?.['@earendil-works/pi-ai']).toBeUndefined()
+  })
+
+  it('pins one generation, not a span of them', () => {
+    const range = pkg.dependencies?.['@earendil-works/pi-ai'] ?? ''
+    // `^0.87.1` is >=0.87.1 <0.88.0 — exactly the host's generation. On the 0.x
+    // line a caret stops at the next minor, which is the boundary that matters
+    // here: anything wider (or a bare `>=`) would silently admit a split again.
+    expect(range).toMatch(/^\^0\.\d+\.\d+/u)
   })
 })

@@ -23,14 +23,24 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { workbuddyAppExecutableCandidates } from '../src/at-rest.ts'
 
 const isWindows = process.platform === 'win32'
 
-/** A real directory whose path contains Chinese characters. */
-const ROOT = join('D:\\', '_dsh_enc_probe')
+/**
+ * A real directory whose path contains Chinese characters.
+ *
+ * Under the system temp directory, not a drive root. What these tests need is a
+ * REAL path with non-ASCII characters, so that a UTF-8 misread of `reg.exe`
+ * cannot resolve it; the drive itself is incidental. A hard-coded `D:` is simply
+ * absent on plenty of machines — the `mkdir ENOENT` that produced there says
+ * nothing about encoding — and a bare `C:\` would be worse, since creating a
+ * directory at a drive root needs elevation.
+ */
+const ROOT = join(tmpdir(), '_dsh_enc_probe')
 const DIR = join(ROOT, '腾讯', 'WorkBuddy')
 const EXE = join(DIR, 'WorkBuddy.exe')
 

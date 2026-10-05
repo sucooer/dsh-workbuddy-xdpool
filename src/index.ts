@@ -43,24 +43,10 @@ import { fileURLToPath } from 'node:url'
  * This plugin's install root, the tree its own provider is assembled from.
  *
  * Two directories up from `lib/` — the built bundle sits in `lib/`, so the
- * package root is its parent. Used as one side of the pi-ai generation check.
+ * package root is its parent. `host-pi-ai.ts` resolves the plugin's own pi-ai
+ * from here, and that is the side the host's copy gets compared against.
  */
 const PLUGIN_ROOT = fileURLToPath(new URL('..', import.meta.url))
-/**
- * The host's own module directory, the tree its `PiAiAdapter` resolves from.
- *
- * Reached from the host package this plugin is loaded by: walking up from a
- * `@deepseek-ai/dsh-llm-pi-ai` import lands in the host's `node_modules`, which
- * is where the HOST generation actually lives. The plugin's own tree is the
- * other side; comparing one tree with itself would always agree.
- */
-const HOST_MODULE_ROOT = ((): string => {
-  try {
-    return fileURLToPath(new URL('../../node_modules/@deepseek-ai/dsh-llm-pi-ai/', import.meta.url))
-  } catch {
-    return ''
-  }
-})()
 
 export { WORKBUDDY_POOL_PROVIDER, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -76,7 +62,7 @@ export {
   type WorkBuddyCredential,
 } from './accounts.ts'
 export { WorkBuddyCatalog, FALLBACK_WORKBUDDY_MODELS, type WorkBuddyModelInfo } from './catalog.ts'
-import { checkPiAiGeneration, piAiMismatchMessage } from '../pi-ai-generation.ts'
+import { choosePiAiSurface } from './host-pi-ai.ts'
 export { WorkBuddyUpstreamClient, buddyAppEvents, classifyUpstreamError, desktopAutomationCreatedEvent, desktopCanvasEvents, desktopChatEvents, parseRateLimitReset, type UpstreamErrorKind } from './upstream.ts'
 export {
   APPEARANCE_THEME_KEY, BUDDY_APP_ID, BUDDY_APP_NAME, LIBRARY_DOC_URL, LIGHTHOUSE_EXPERT_ID,
@@ -460,28 +446,6 @@ export function createCore(logger?: { warn(...args: unknown[]): void; info?(...a
 }
 
 /**
- * Log a warning when the plugin and the host resolve different pi-ai
- * generations.
- *
- * Never throws and never blocks startup: the check is a filesystem lookup, and
- * a plugin that refused to load because of a version guess would be worse than
- * one that merely warns. The two directories are THIS plugin's install root and
- * the host's own module directory, so the two resolutions walk different trees —
- * resolving from one place only would compare a copy with itself and always
- * agree.
- */
-function warnOnPiAiGenerationMismatch(ctx: Context): void {
-  try {
-    const check = checkPiAiGeneration(PLUGIN_ROOT, HOST_MODULE_ROOT)
-    const message = piAiMismatchMessage(check)
-    if (message !== undefined) ctx.logger.warn(message)
-  } catch {
-    // A generation check that breaks startup would be a worse bug than the
-    // mismatch it looks for.
-  }
-}
-
-/**
  * Start the loopback endpoint, register the `workbuddy-xdpool` provider, and
  * discover accounts. The provider registers only after `shim.ready` resolves,
  * because its models read the shim origin at construction time.
@@ -489,17 +453,9 @@ function warnOnPiAiGenerationMismatch(ctx: Context): void {
 export function apply(ctx: Context, config: Config = {}): void {
   const core = createCore(ctx.logger)
 
-  // Cross-generation guard, checked ONCE at load.
-  //
-  // Two copies of @earendil-works/pi-ai on one call chain — the plugin's and the
-  // host adapter's — throw a TypeError at the adapter seam, which the host
-  // reports as a non-retryable PI_AI_ERROR: every turn fails with no content and
-  // no useful error. A package.json range cannot prevent it (the old peer range
-  // excluded the host generation entirely, making the mix a valid install), so
-  // the resolved reality is compared here instead. Warn only: the plugin still
-  // runs, because a mismatch may be benign and a hard failure on a guess would
-  // be worse.
-  warnOnPiAiGenerationMismatch(ctx)
+  // The pi-ai generation check happens where the adapters are built, not here:
+  // it has to be able to LOAD the host's copy, and that is asynchronous. See the
+  // `choosePiAiSurface` call inside the `shim.ready` continuation below.
 
   // The permanent ignore list, read ONCE here (synchronously) and kept live.
   //
@@ -1005,6 +961,21 @@ function canonicalJson(value: unknown): string {
       if (stopped) return
 
       try {
+        // Which pi-ai the provider gets assembled with.
+        //
+        // The host's `PiAiAdapter` consumes this provider with ITS OWN pi-ai
+        // generation, and two generations disagree about the shape of the
+        // terminal message — the mix throws inside the host adapter and surfaces
+        // as a non-retryable `PI_AI_ERROR`, so every turn fails with no content.
+        // A `package.json` range cannot prevent that (a neighbouring plugin
+        // pinning pi-ai moves the plugin's own import off the host's), so the
+        // host's copy is loaded here whenever the generations differ. It has to
+        // happen after `shim.ready` rather than at apply time because loading a
+        // module is asynchronous.
+        const { surface: piAi, note, warning } = await choosePiAiSurface(PLUGIN_ROOT)
+        ctx.logger.info?.(`dsh-workbuddy-xdpool: pi-ai ${note}`)
+        if (warning !== undefined) ctx.logger.warn(warning)
+
         // One adapter per region. Each provider is bound to its own account
         // slice of the pool (see the `region` argument on `pool.acquire`), so a
         // CN request can never be served by a global account and vice versa —
@@ -1016,6 +987,7 @@ function canonicalJson(value: unknown): string {
             catalog: core.catalogs.cn,
             providerId: POOL_PROVIDER_BY_REGION.cn,
             displayName: POOL_NAME_BY_REGION.cn,
+            piAi,
           }),
           global: createWorkBuddyAdapter({
             ctx,
@@ -1023,6 +995,7 @@ function canonicalJson(value: unknown): string {
             catalog: core.catalogs.global,
             providerId: POOL_PROVIDER_BY_REGION.global,
             displayName: POOL_NAME_BY_REGION.global,
+            piAi,
           }),
         } as const
 

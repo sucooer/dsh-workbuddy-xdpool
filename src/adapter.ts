@@ -11,14 +11,13 @@
  * @module dsh-workbuddy-xdpool/adapter
  */
 
-import { createProvider } from '@earendil-works/pi-ai'
 import type { Api, AuthContext, CredentialStore, Model, Provider } from '@earendil-works/pi-ai'
-import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveImageAttachmentAccess, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { Context } from '@deepseek-ai/cordis'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
+import { PLUGIN_PI_AI, type PiAiSurface } from './host-pi-ai.ts'
 import type { WorkBuddyShim } from './shim.ts'
 
 /** Provider route this bundle owns. */
@@ -77,6 +76,18 @@ export interface WorkBuddyAdapterOptions {
   ctx: Context
   providerId?: string
   displayName?: string
+  /**
+   * Which pi-ai copy to assemble the provider with.
+   *
+   * The host adapter consumes this provider with ITS OWN generation, and two
+   * generations disagree about the terminal message — the mix fails every turn
+   * with a non-retryable `PI_AI_ERROR`. `choosePiAiSurface` returns the host's
+   * copy whenever the plugin's own import resolved to a different generation.
+   *
+   * Defaults to the plugin's own copy, which is correct whenever the two agree
+   * and is what keeps this function synchronous for the tests and the CLI.
+   */
+  piAi?: PiAiSurface
 }
 
 /** What {@link createWorkBuddyAdapter} hands back. */
@@ -175,6 +186,9 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string
  */
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
   const { shim, catalog } = options
+  // The copy the host adapter will consume this provider with. See
+  // `host-pi-ai.ts` for why the plugin does not simply use its own import.
+  const piAi = options.piAi ?? PLUGIN_PI_AI
   const providerId = options.providerId ?? WORKBUDDY_POOL_PROVIDER
   const displayName = options.displayName ?? 'WorkBuddy XD Pool'
 
@@ -183,7 +197,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     return catalog.visible().map(info => toPiModel(info, baseUrl, providerId))
   }
 
-  const base = createProvider({
+  const base = piAi.createProvider({
     id: providerId,
     name: displayName,
     auth: {
@@ -198,7 +212,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
       },
     },
     models: buildModels(),
-    api: openAICompletionsApi(),
+    api: piAi.openAICompletionsApi(),
   })
 
   const provider: Provider = { ...base, getModels: () => buildModels() }

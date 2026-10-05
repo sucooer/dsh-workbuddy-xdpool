@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   defaultDesktopAuthDirs,
   parseWorkBuddyAuth,
@@ -18,8 +19,10 @@ import {
   workbuddyAccountId,
 } from './accounts.ts'
 import { WORKBUDDY_APP_EXECUTABLE_ENV, workbuddyAppExecutableCandidates } from './at-rest.ts'
+import { candidateHostRoots, findHostPiAi, hostBases } from './host-pi-ai.ts'
 import { createCore } from './index.ts'
 import { ignoreAccount, readIgnoredAccounts, unignoreAccount } from './ignored.ts'
+import { generationOf, piAiGenerationFrom } from '../pi-ai-generation.ts'
 import { formatRates, formatStatus } from './status.ts'
 
 /** Directory holding imported account snapshots. */
@@ -348,6 +351,36 @@ async function commandDoctor(): Promise<number> {
     )
   } else {
     lines.push(`  ✓ using ${firstExisting}`)
+  }
+
+  // pi-ai generation. This seam gets its own section because a split across it
+  // fails EVERY turn with a non-retryable `PI_AI_ERROR` and no content — a
+  // symptom that reads like an account or quota problem and sends people to the
+  // wrong place. The plugin loads the host's copy at startup when it can, so a
+  // split is only fatal when the host's copy could not be read.
+  lines.push('')
+  lines.push('pi-ai generation:')
+  const pluginGeneration = piAiGenerationFrom(fileURLToPath(new URL('..', import.meta.url)))
+  const hostPiAi = findHostPiAi(candidateHostRoots(hostBases()))
+  lines.push(
+    pluginGeneration === undefined
+      ? '  plugin : not resolvable'
+      : `  plugin : ${pluginGeneration.version}  (${pluginGeneration.resolvedFrom})`,
+  )
+  lines.push(
+    hostPiAi === undefined
+      ? '  host   : not found — probes process.resourcesPath; a plain-Node host keeps it elsewhere'
+      : `  host   : ${hostPiAi.version}  (${join(hostPiAi.dir, 'package.json')})`,
+  )
+  if (pluginGeneration !== undefined && hostPiAi !== undefined) {
+    if (generationOf(pluginGeneration.version) === generationOf(hostPiAi.version)) {
+      lines.push(`  ✓ both on ${generationOf(pluginGeneration.version)}`)
+    } else {
+      healthy = false
+      lines.push(`  ✗ generations differ — every turn fails with a non-retryable PI_AI_ERROR`)
+      lines.push('    The plugin loads the host copy at startup; if the log shows it could not,')
+      lines.push('    align the profile instead (README → 每轮都报 PI_AI_ERROR).')
+    }
   }
 
   console.log(lines.join('\n'))

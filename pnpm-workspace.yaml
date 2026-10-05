@@ -1,6 +1,35 @@
 packages:
   - '.'
 
+# pnpm 10+ 把设置搬到了这里。`.npmrc` 里的 `auto-install-peers` 和 package.json 里的
+# `pnpm` 字段，pnpm 11 都不再读（前者只有 npm 会拿它报个 warning，后者会明确提示被忽略）。
+#
+# 这两个值必须与 pnpm-lock.yaml 的 `settings:` 一致，否则 `--frozen-lockfile` 会报
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH。写下 `autoInstallPeers: false` 不只是为了对齐：
+# 它是默认被改成 true 之后，安装才会去拉那些框架 peer —— 见下面的 peerDependencyRules。
+autoInstallPeers: false
+excludeLinksFromLockfile: false
+strictPeerDependencies: false
+
+# `@deepseek-ai/dsh-*` 是宿主运行时提供的，永远不该从 registry 装。
+# 而且这些包的版本范围本身不可满足：它们只发过 `-rc`/`-alpha`，而 semver 规定
+# 范围里若没有「与候选同一 tuple 且带预发布」的比较器，预发布版本不算满足。
+# 例如 `@deepseek-ai/dsh-session@>=0.1.5 <0.2.0-0`（由 dsh-client-runtime /
+# dsh-settings 作为 peer 声明）在官方源上也匹配不到任何版本。
+peerDependencyRules:
+  ignoreMissing:
+    - '@deepseek-ai/*'
+
+# 仓库里只留一代 pi-ai，与宿主同代。
+#
+# 不加这条时，devDependency 链会自己带一份进来：`@deepseek-ai/dsh-llm-pi-ai@0.1.5-rc.2`
+# 依赖 pi-ai 0.85，于是它的 `ResolvedPiAiProviderProfile.piProvider` 是 0.85 的 `Provider`，
+# 而插件组装出来的是 0.87 的（直接依赖）——两代类型在 `compat` 联合上差一个成员
+# （0.87 多了 `MistralConversationsCompat`），typecheck 直接失败。
+# 统一到一代之后，仓库的类型环境和宿主的运行时环境是一致的。
+overrides:
+  '@earendil-works/pi-ai': '^0.87.1'
+
 allowBuilds:
   '@google/genai': false
   protobufjs: false

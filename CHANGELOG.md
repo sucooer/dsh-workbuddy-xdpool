@@ -4,6 +4,44 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.8.1 — pi-ai 两头必须同代，这次钉死在安装期
+
+> 有反馈说升级之后每轮对话必崩：`Cannot read properties of undefined (reading 'length')` 加一个不可重试的 `PI_AI_ERROR`。上一版已经诊断出根因（同一条调用链上混着两代 pi-ai），但只做了「告警」。这次不再要求用户去改 profile。
+
+### 问题出在哪
+
+同一张调用链上混着两代 `@earendil-works/pi-ai`：插件用自己那份组装 provider，宿主的 `PiAiAdapter` 用它自己那份消费事件流，两代对终态消息的形状约定不同，接缝处抛 `TypeError`，宿主把它归成不可重试的 `PI_AI_ERROR`，于是每轮都秒失败。
+
+上一版的 guard 本该把这件事叫出来，但它**看不见宿主那一份**：它顺着 `@deepseek-ai/dsh-llm-pi-ai` 往上找宿主，而桌面宿主的依赖树打在 `resources/app.asar` 里 —— 插件那棵 `node_modules` 里根本没有这个包，解析于是回落到插件自己那份。**两侧比的是同一份，于是永远判「对齐」**，故障发生时一声不响。
+
+版本范围也拦不住：范围只描述「我能接受什么」，描述不了这台机器上实际装的是哪一份。同 profile 里另一个插件（`@opencode2dsh/dsh-plugin@0.3.7` 把 pi-ai 钉死在 0.82.1）就足以让插件这份落到 0.82，而宿主是 0.87。
+
+### 现在怎么做
+
+新增 `src/host-pi-ai.ts`：在 `shim.ready` 之后、组装 adapter 之前，从 `process.resourcesPath` 往下探几个布局（`app.asar/dsh/node_modules` 为首），读出宿主那份 pi-ai 的版本；**两份代际不同时，把宿主那一份加载进来用**，插件自己的那份退回兜底。
+
+- 加载走的是**绝对路径的 `import()`**，不是裸包名 —— 裸包名会顺着插件自己的 `node_modules` 解析，正好又回到要躲开的那一份。宿主若加载的是同一个文件，两边还共用同一个模块实例。
+- 三种情况**一律不改行为**：两份同代（补丁差异不算跨代）、找不到宿主那份、宿主那份读不出来。只有第三种会同时把告警打到日志里，附上两边版本和手工修法。
+- 告警文案沿用 `pi-ai-generation.ts` 的既有实现，改成用**真正探到的**宿主版本来判定。
+
+`adapter.ts` 的 `createWorkBuddyAdapter` 多了一个可选的 `piAi` 参数（用哪一份 pi-ai 组装）；不传就是插件自己那份，所以 CLI 与测试的调用方式没变。
+
+### 已知边界
+
+- 宿主那份 pi-ai 在 asar 里的路径是**按目录名拼的**（`dist/index.js`、`dist/api/openai-completions.lazy.js`），不是解析出来的：`require.resolve` 看不见 `./api/*` 这个只给 `import` 用的子路径。拼错不会崩 —— 读不到就当宿主那份不可用、退回插件自己那份并告警。
+- 宿主换代（例如 DSH 升级把 pi-ai 提到 0.88）不需要跟着发版：读的是宿主实际的版本号。
+
+### 补丁（实测反馈）：那条加载路径在真实宿主里没生效
+
+上面这套「去宿主里拿」在真实宿主上**没有解决问题** —— 用户装上新构建后仍然每轮 `PI_AI_ERROR`。这条路依赖两个前提：宿主的 `process.resourcesPath` 指向 Electron 的 `resources/`，以及**进程内的 `fs` 是 asar-aware 的**（`existsSync` 能看见压缩包里的文件、`import()` 能加载包内路径）。在 DSH 实际的进程模型里这两个前提至少有一个不成立，于是「找不到宿主那份」→ 退回插件自己那份 → 症状照旧。
+
+改法是把「插件那份必须是宿主那一代」从**运行时的愿望**变成**安装期的保证**：`@earendil-works/pi-ai` 从「可选 peer」改为 **直接依赖**，钉在 `^0.87.1`（当前宿主那一代；`^0.87` 刚好只覆盖 0.87 这一代，不会漂到 0.88）。
+
+- 好处：不再依赖 asar 能否被读到，也不再受 profile 里别的插件（`@opencode2dsh/dsh-plugin` 钉死 0.82.1）把顶层那份挪走的影响。
+- 代价：DSH 把 pi-ai 提到新一代时要**跟着发一版**。上面的运行时加载逻辑**保留**，宿主换代而插件还没跟上时它会试着自愈；它失败时的那条告警也保留，用来解释这一类错。
+- 顺带：`devDependencies` 里那份 0.85.1 去掉了 —— 直接依赖本身就能给 typecheck 和 dts 用，两处写不同版本只会让类型检查对着一个不是运行时用的版本。
+- 连带的仓库侧改动：`pnpm-workspace.yaml` 加了 `overrides: {'@earendil-works/pi-ai': '^0.87.1'}`。不加的话 devDependency 链会带进**第二代**：`dsh-llm-pi-ai@0.1.5-rc.2` 自己依赖 pi-ai 0.85，而 `ResolvedPiAiProviderProfile.piProvider` 正是按它声明的 —— 两代在 `compat` 联合上差一个成员（0.87 多了 `MistralConversationsCompat`），`pnpm typecheck` 报 TS2322。统一到一代之后，仓库的类型环境和宿主的运行时环境才对得上。
+
 ## 1.8.0 — 四种模式，终于排得像个样子了
 
 > 上一版加了第四种模式「每对话固定」，功能是好的，排版是坏的。坏得很实在：格子还是按三个排的，第四个只好委屈地掉到下一行，占着半个身位，像个插班生。

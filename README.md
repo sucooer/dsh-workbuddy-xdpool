@@ -138,6 +138,46 @@ pnpm typecheck:client   # 客户端类型检查
 
 Web / TUI profile 也能用（`--profile web` / `--profile dsh-tui`）。
 
+### 每轮都报 `PI_AI_ERROR`？
+
+如果每一轮对话都在**发出请求之前**就秒失败，错误是 `Cannot read properties of undefined (reading 'length')`，外加一个不可重试的 `PI_AI_ERROR` —— 那不是账号、也不是网络的问题，是 **pi-ai 代际没对齐**。
+
+插件用自己那份 `@earendil-works/pi-ai` 组装 provider，宿主的 `PiAiAdapter` 用它自己那份消费事件流。两代（比如插件侧 0.82、宿主侧 0.87）对终态消息的形状约定不同，接缝处抛 `TypeError`，宿主把它归成不可重试的 `PI_AI_ERROR`，于是每轮都秒失败、连一个字都吐不出来。`package.json` 的版本范围拦不住这种事：范围只描述「我能接受什么」，描述不了这台机器上实际装的是哪一份 —— 同 profile 里另一个插件（比如 `@opencode2dsh/dsh-plugin`）把 pi-ai 钉在别的版本上，就足以把插件这份挪走。
+
+**插件自带那份，且在安装期就钉好**：`@earendil-works/pi-ai` 是插件的**直接依赖**（`^0.87.1`，也就是当前宿主那一代），所以插件加载到的就是正确的代际 —— 不管 profile 里别的插件把它挪到哪一版。装好即对齐，不需要你做任何事。
+
+**还有一层自愈**：万一宿主升级把 pi-ai 提到了新一代、而插件这份还没跟上，插件启动时会试着**直接把宿主那一份加载进来**用。日志里会说明最终用了哪一份：
+
+```
+dsh-workbuddy-xdpool: pi-ai using host 0.88.1 (plugin had 0.87.1)
+```
+
+找不到、或者两份本来就同代，就照旧用插件自己的 —— 不会因为找不到而不启动。只有「两份不同代、又读不到宿主那份」这一种情况没法自愈，那时日志里会给出两边版本和下面这条手工修法。
+
+**手工修法（兜底）**：让 profile 里解析到的 pi-ai 跟宿主同代 —— 在 `~/.dsh/profiles/desktop/package.json` 的 `dependencies` 里加一条直接依赖，版本填宿主实际用的那一版：
+
+```json
+"@earendil-works/pi-ai": "0.87.1"
+```
+
+然后重装、重启 DSH：
+
+```sh
+cd ~/.dsh/profiles/desktop
+npx pnpm@11 install --config.confirmModulesPurge=false --config.minimumReleaseAge=0
+```
+
+**宿主用的是哪一版**：它打在 `resources/app.asar` 里，不在插件能看到的那棵 `node_modules` 里。想确认时用这一行读出来（路径按自己的安装位置改）：
+
+```sh
+node -e "const b=require('fs').readFileSync(process.argv[1],'latin1');const m=b.match(/\"@earendil-works\/pi-ai\",\s*\"version\":\s*\"([0-9.]+)\"/);console.log(m?m[1]:'not found')" "C:/Users/<你>/AppData/Local/Programs/DeepSeek Harness/resources/app.asar"
+```
+
+> 写这份说明时核对的宿主版本是 **0.87.1**。**DSH 升级后宿主那侧会换代，那时插件要跟着发一版**（把依赖里的版本改到新宿主那一代）；上面那层自愈能顶上就用不着，但它不保证在所有宿主进程模型里都可用。
+
+>
+> `overrides` 是更强制但影响面更大的写法（`"pnpm": { "overrides": { "@earendil-works/pi-ai": "0.87.1" } }`）：它会连其它依赖 pi-ai 的插件一起换掉，只在直接依赖没生效时才用。
+
 ## 命令行
 
 统一用 `dsh plugin --profile desktop exec dsh-workbuddy-xdpool <子命令>` 调用：
@@ -193,6 +233,7 @@ workbuddy-xdpool:
 
 - **宿主侧**（`src/`，跑在 DSH 主进程里）
   - `index.ts` —— 注册 `workbuddy-xdpool` provider、`workbuddy-xdpool` 设置节、各条同源路由（状态 / 重新检测 / 清除冷却 / 签到 / 自动化运行 / 保留积分），以及账号发现与模型目录播种。
+  - `adapter.ts` / `host-pi-ai.ts` / `pi-ai-generation.ts` —— provider 的组装，以及**用哪一份 pi-ai 组装**。宿主的 `PiAiAdapter` 用它自己那份 pi-ai 消费事件流，两份不同代会让每一轮对话都以不可重试的 `PI_AI_ERROR` 失败，所以 `@earendil-works/pi-ai` 是插件的**直接依赖**（钉在当前宿主那一代）；`host-pi-ai.ts` 另外会在启动时尝试定位并加载宿主那一份，作为宿主换代时的自愈路径，`pi-ai-generation.ts` 是这套比对的纯函数部分。
   - `accounts.ts` —— `WorkBuddyAccountPool`：读本机 WorkBuddy 桌面 auth 快照、429 冷却、轮换与 token 刷新；账号停用与积分保留也在这里。
   - `scheduler.ts` —— 积分自动化的调度器：按本地时点跑五个任务（签到 / 上报 / 任务 / 连登 / 旅行），每日收益账本落盘，手动「立即运行」走的是同一套逻辑。
   - `task-events.ts` —— 13 条任务事件链的构造。每条链都是纯数据，外加它该走哪个指纹通道（桌面 / 网页）；需要真实会话的任务（技能、专家）在这里先开一次真对话，拿到服务端 id。
