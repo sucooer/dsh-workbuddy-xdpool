@@ -4,6 +4,46 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.9.2 — 设置卡片不见了：改名改掉了一半
+
+> 模型照常能用，设置面板里却怎么都找不到「XD Pool」这个标签页，重启也没用。原因不是宿主换代，是上一版**改名只改了一半**。
+
+### 问题出在哪
+
+宿主浏览器侧的模块加载器是按 **npm 包名**寻址的 —— `require('react')`、`require('@deepseek-ai/dsh-client-ui-primitives')` 都是包名，插件自己的客户端模块也一样：宿主用**它解析到的那个包的名字**去要这个模块。
+
+于是有一个硬约束：**包名、`cordis.patch.yml` 里的 `name`、客户端产物 `lib/client.js` 头部声明的 `__ModuleLoader__.load({ id })`，三者必须是同一个字符串。**
+
+本机 profile 里其它插件无一例外都满足它：
+
+| 插件 | 包名 | patch `name` | 客户端 id |
+|---|---|---|---|
+| `dsh-cost-meter` | `dsh-cost-meter` | 同 | 同 |
+| `dsh-opencode-palette` | `dsh-opencode-palette` | 同 | 同 |
+| `@sucooer/dsh-keypilot` | `@sucooer/dsh-keypilot` | 同 | 同 |
+| `@xmanrui/dsh-im` | `@xmanrui/dsh-im` | 同 | 同 |
+| `@michengai/dsh-code-review` | `@michengai/dsh-code-review` | 同 | 同 |
+
+1.9.1 把包名改成 `@anyaer/dsh-workbuddy-xdpool`（fork 必须换 scope），但 `tsdown.config.ts` 里硬编码的 `PLUGIN_ID` 和 `cordis.patch.yml` 的 `name` 都还写着旧名 `dsh-workbuddy-xdpool`。客户端模块于是注册在一个**没人会去取**的键上：
+
+- **宿主那一半照跑**（provider 注册、账号池、模型、自动切号全部正常）→ 表现为「模型还能用」；
+- **浏览器那一半从不运行** → 设置面板里没有这个标签页，**而且不报任何错**。
+
+这正是那个最难受的失效形态：功能一半活着一半死了，日志干干净净。
+
+### 现在怎么做
+
+- `tsdown.config.ts` 的 `PLUGIN_ID` 不再手写，改成**从 `package.json` 读 `name`** —— 以后再改名，客户端 id 自动跟上，没有第二处可以忘。
+- `cordis.patch.yml` 的 `name` 改成包名 `@anyaer/dsh-workbuddy-xdpool`（宿主按这个 specifier 从 profile 的 `node_modules` 解析，也按它取浏览器模块）。条目 **`id` 仍是 `llm-workbuddy-xdpool`**，所以 profile 里那份带着你全部设置（分配模式、自动化、积分台账）的 patch 依旧生效，**配置不会丢**。
+- 新增 `tests/compatibility-declaration.test.ts` 里的「the plugin is addressed by ONE name everywhere」三条：客户端产物声明的 id 必须等于包名、patch 的 `name` 必须等于包名、以及 `PLUGIN_ID` 必须是从 `package.json` 派生的而不是字面量。
+  - 这三条是**补课**：改名之所以能静默溜过去，就是因为没有任何测试看过 `lib/client.js` 里那个 id。
+
+### 验证
+
+- 构建产物头部应变成 `window.__ModuleLoader__.load({ id: "@anyaer/dsh-workbuddy-xdpool", … })`；
+- 重启 DSH 后，**设置面板顶部平级标签**里应重新出现「XD Pool」（在 `通用设置 / 模型 / 内置插件 / Agent 预设` 之后）；打开面板是侧边栏左下角的齿轮或 `Ctrl+Alt+,`。
+- 若标签页回来了但内容空白，看浏览器控制台有没有 `[dsh-workbuddy-xdpool] client page failed to load` —— 那是客户端那一半的另一类故障，和本次无关。
+
 ## 1.9.1 — fork 版：发布到自己的 npm scope
 
 本仓库是 [XDTrees/dsh-workbuddy-xdpool](https://github.com/XDTrees/dsh-workbuddy-xdpool) 的 fork，由 `sucooer` 维护并**独立发布**到 npm。

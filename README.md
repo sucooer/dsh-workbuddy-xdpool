@@ -178,6 +178,31 @@ node -e "const b=require('fs').readFileSync(process.argv[1],'latin1');const m=b.
 >
 > `overrides` 是更强制但影响面更大的写法（`"pnpm": { "overrides": { "@earendil-works/pi-ai": "0.87.1" } }`）：它会连其它依赖 pi-ai 的插件一起换掉，只在直接依赖没生效时才用。
 
+### 模型能用，但设置面板里没有「XD Pool」这个标签页？
+
+**症状**：账号池照常工作、模型照常回答，唯独设置面板里找不到这个插件的页面；重启无效；**控制台里一条错都没有**。
+
+**这是一种特定的打包事故，不是宿主换代**：宿主浏览器侧的模块加载器按 **npm 包名**寻址（`require('react')`、`require('@deepseek-ai/dsh-client-ui-primitives')` 都是包名），插件自己的客户端模块也不例外。所以有硬约束 ——
+
+> **包名 = `cordis.patch.yml` 里的 `name` = `lib/client.js` 头部 `__ModuleLoader__.load({ id })` 声明的那个字符串。**
+
+三者对齐时一切正常；只要有任何一个脱节，客户端模块就注册在**没人会去取的键**上，于是：
+
+- 宿主那一半照跑（provider、账号池、自动切号）→ 看起来「插件是好的」；
+- 浏览器那一半从不执行 → 没有设置卡片，**且不报错**。
+
+**自查**（三条打印出来应该完全一致）：
+
+```sh
+cd ~/.dsh/profiles/desktop/node_modules/<插件目录>
+node -e "const p=require('./package.json');console.log('pkg  ',p.name);console.log('client',require('fs').readFileSync('./lib/client.js','utf8').match(/load\(\{\s*id:\s*['\"]([^'\"]+)/)[1])"
+grep -n 'name:' cordis.patch.yml
+```
+
+**修法**：让三者一致 —— 客户端 id 与 patch 的 `name` 都写成**包名**（scoped 包就带 scope）。本项目自 1.9.2 起 `tsdown.config.ts` 直接从 `package.json` 读 `name`，所以再改包名不会重演。
+
+> 注意别顺手改 `cordis.patch.yml` 的 **`id`**：那是宿主给这个插件分配的条目 id（本项目是 `llm-workbuddy-xdpool`），你在 profile 里保存的全部设置都挂在它下面。改名的是 `name`，不是 `id`。
+
 ## 命令行
 
 统一用 `dsh plugin --profile desktop exec dsh-workbuddy-xdpool <子命令>` 调用：

@@ -1,6 +1,11 @@
 # Register the WorkBuddy XD Pool provider. Discovery is read-only: the plugin
 # reuses the WorkBuddy desktop app's own sign-in files and never starts a
 # separate OAuth flow. Requests rotate across every discovered account.
+# `name` must be the PACKAGE name, not a short label: the Host resolves this
+# specifier from the profile's node_modules, and the browser half registers its
+# module under the same string. A shortcut here (`dsh-workbuddy-xdpool`) is what
+# made the settings card silently disappear on the renamed fork — see
+# tsdown.config.ts's PLUGIN_ID.
 - insert:
     - id: llm-workbuddy-xdpool
-      name: dsh-workbuddy-xdpool
+      name: '@anyaer/dsh-workbuddy-xdpool'

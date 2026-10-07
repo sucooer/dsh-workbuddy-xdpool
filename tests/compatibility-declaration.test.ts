@@ -19,6 +19,7 @@ const ROOT = join(import.meta.dirname, '..')
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
   dependencies?: Record<string, string>
   engines?: Record<string, string>
+  name?: string
   peerDependencies?: Record<string, string>
   version?: string
 }
@@ -103,5 +104,45 @@ describe('pi-ai is pinned to the host generation at install time', () => {
     // line a caret stops at the next minor, which is the boundary that matters
     // here: anything wider (or a bare `>=`) would silently admit a split again.
     expect(range).toMatch(/^\^0\.\d+\.\d+/u)
+  })
+})
+
+describe('the plugin is addressed by ONE name everywhere', () => {
+  // The Host's browser module loader is keyed by npm package specifier, so a
+  // plugin's client bundle must register under its own package name — and the
+  // loader row that mounts it must resolve to that same package. Break either
+  // and the failure mode is the worst kind: the host half keeps working (models
+  // are served, requests succeed) while the browser half never runs, so the
+  // settings card simply is not there. No error is reported anywhere.
+  //
+  // That is exactly what the 1.9.1 rename did — the package became
+  // `@anyaer/dsh-workbuddy-xdpool` while the client banner and the patch row
+  // kept `dsh-workbuddy-xdpool`. Nothing in the suite could see it, because
+  // nothing looked at the built bundle under a name other than its own.
+  const packageName = pkg.name ?? ''
+  const clientBundle = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
+  const patch = readFileSync(join(ROOT, 'cordis.patch.yml'), 'utf8')
+  const tsdownConfig = readFileSync(join(ROOT, 'tsdown.config.ts'), 'utf8')
+
+  it('declares the package name in the client bundle', () => {
+    const declared = /window\.__ModuleLoader__\.load\(\{\s*id:\s*['"]([^'"]+)['"]/u.exec(clientBundle)
+    expect(declared, 'lib/client.js must register through the host module loader').not.toBeNull()
+    expect(declared?.[1]).toBe(packageName)
+  })
+
+  it('mounts that same package in the loader patch', () => {
+    const declared = /^\s*name:\s*['"]?([^\s'"]+)['"]?\s*$/mu.exec(patch)
+    expect(declared, 'cordis.patch.yml must insert a row named after the package').not.toBeNull()
+    expect(declared?.[1]).toBe(packageName)
+  })
+
+  it('derives the id instead of retyping it', () => {
+    // Reading the name from package.json is what makes a future rename safe:
+    // a hardcoded literal is precisely how this broke, and it broke silently.
+    expect(tsdownConfig).toContain("readFileSync(new URL('./package.json', import.meta.url)")
+    expect(tsdownConfig).not.toMatch(/const PLUGIN_ID = ['"]/u)
+    // Cheap alignment check: the built bundle is a committed artifact, so a
+    // rename that forgets `pnpm build` would ship the stale id to every user.
+    expect(clientBundle).toContain(`id: ${JSON.stringify(packageName)}`)
   })
 })
