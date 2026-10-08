@@ -21,6 +21,7 @@ import type { WorkBuddyAccount, WorkBuddyAccountPool } from './accounts.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { parseRateLimitReset, WorkBuddyUpstreamClient, type ChatStreamResult, type UpstreamErrorKind, type WorkBuddyRegion } from './upstream.ts'
 import { compactWithSummary, estimateMessagesTokens, hardTruncate, type ChatMessage } from './context-budget.ts'
+import { paidAlternativeFor } from './siblings.ts'
 
 export interface ShimLogger {
   info?(...args: unknown[]): void
@@ -230,6 +231,24 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     void handle(req, res)
   })
 
+  /**
+   * "The same model has a paid row" sentence for a 429 body, or undefined.
+   *
+   * Reads the catalog the shim was built with, so the hint names a row this
+   * gateway ACTUALLY serves — a CN-only id in a global 429 would be worse than
+   * no hint at all. Absent when the cooling model is itself paid, or when the
+   * family has no priced twin.
+   */
+  function paidTwinHint(modelId: string): string | undefined {
+    const models = catalog.current()
+    const model = models.find(candidate => candidate.id === modelId)
+    if (model === undefined) return undefined
+    const twin = paidAlternativeFor(model, models)
+    if (twin === undefined) return undefined
+    return `${twin.id} is the same model on a paid row (x${twin.multiplier.toFixed(2)} credits) `
+      + 'and is rate-limited separately; switch to it to keep going'
+  }
+
   const ready = new Promise<void>((resolve, reject) => {
     server.once('listening', () => resolve())
     server.once('error', reject)
@@ -267,7 +286,9 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     lastBalanceAt.set(account.id, now)
     try {
       const credits = await client.fetchCredits(account.credential)
-      pool.noteCredits(account.id, credits.total)
+      // The expiry travels with the balance: `expiry` mode sorts on it, and a
+      // balance read is the only place we ever learn it.
+      pool.noteCredits(account.id, credits.total, credits.nearestExpiryMs)
     } catch {
       // Keep the previous reading; the next request tries again.
     }
@@ -372,12 +393,18 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
             ? 'every WorkBuddy account is rate-limited'
             : `every account is rate-limited for model ${modelId}`
           const upstream = last === undefined ? '' : ` — ${last.message.slice(0, 200)}`
+          // The gateway limits each ROW of a product line separately, so a
+          // cooling free row usually has a working paid twin. Without this the
+          // user's only move is to wait; naming the twin gives them a way out
+          // that costs a little rather than nothing.
+          const twin = modelId === undefined ? undefined : paidTwinHint(modelId)
           writeOpenAIError(
             res,
             429,
             'soft_rate',
             `${subject} (${why.cooling}/${why.total} cooling, tried ${tried.length})`
-              + `${tried.length === 0 ? '' : `: ${tried.join(' → ')}`}${upstream}`,
+              + `${tried.length === 0 ? '' : `: ${tried.join(' → ')}`}${upstream}`
+              + (twin === undefined ? '' : ` — ${twin}`),
           )
           return
         }
@@ -404,6 +431,20 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
           return
         }
 
+        if (why.reason === 'session_dead') {
+          // Distinct from "never signed in": these accounts HAVE credentials, the
+          // upstream just refuses them now. Waiting does not help, and saying
+          // "no credential found" would send the user looking for a missing file.
+          writeOpenAIError(
+            res,
+            401,
+            'session_dead',
+            `${why.dead}/${why.total} WorkBuddy account(s) for this gateway were rejected by the upstream `
+              + '(their sign-in was revoked); sign in again in the WorkBuddy desktop app to restore them',
+          )
+          return
+        }
+
         writeOpenAIError(
           res,
           401,
@@ -425,10 +466,28 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
 
       last = { kind: result.kind, status: result.status, message: result.message }
 
-      // A dead session is recoverable: refresh the token and retry the request.
+      // A dead session is only recoverable when the refresh token still works.
+      // `refreshAccount` asks the upstream and reports back: `true` means the
+      // token was renewed (retry the request), `false` means the upstream
+      // confirmed the credential is revoked. In that case the account is cooled
+      // so the next attempt rotates instead of landing on it again — without
+      // this, every one of `maxAttempts` hit the same dead account while healthy
+      // accounts were never tried.
       if (result.kind === 'session_dead') {
         logger?.warn(`dsh-workbuddy-xdpool: ${account.label} session dead; refreshing token and retrying`)
-        await pool.refreshAccount(account.id)
+        const before = account.credential.accessToken
+        const recovered = await pool.refreshAccount(account.id, { force: true })
+        // A 401 on a token the upstream still hands out refresh credentials for
+        // is only "maybe stale". Once the refresh comes back with the SAME token
+        // (or fails outright) there is nothing left to try: treat it as dead so
+        // the retry budget goes to the other accounts instead of this one.
+        if (!recovered || account.credential.accessToken === before) {
+          pool.penalizeCredentialDead(account.id)
+          logger?.warn(
+            `dsh-workbuddy-xdpool: ${account.label} sign-in is no longer valid `
+              + `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
+          )
+        }
         continue
       }
 
@@ -726,7 +785,11 @@ async function recoverFromContextOverrun(options: RecoverOptions): Promise<Recov
       return { ok: false, detail: 'prompt still exceeded the window after compaction' }
     }
     if (result.kind === 'session_dead') {
-      await pool.refreshAccount(account.id)
+      // Same rule as the main loop: try a refresh, and if the credential is
+      // proven dead cool it so this retry budget is not spent on it again.
+      const before = account.credential.accessToken
+      const recovered = await pool.refreshAccount(account.id, { force: true })
+      if (!recovered || account.credential.accessToken === before) pool.penalizeCredentialDead(account.id)
       continue
     }
     if (result.kind === 'hard_credit') {

@@ -40,6 +40,8 @@ import { DEFAULT_AUTOMATION_HOURS } from '../status-paths.ts'
 import { POOL_PLUGIN_ICON } from './icon.ts'
 import { POOL_CARD_CSS } from './styles.ts'
 import { isFreeNow, promoStatusFor } from '../promo.ts'
+import { paidAlternativeFor } from '../siblings.ts'
+import type { PaidSibling } from '../siblings.ts'
 import type { WorkBuddyPoolSettingsKey } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -189,12 +191,13 @@ function formatCapacity(value: number | undefined): string {
 }
 
 /**
- * The four ways the pool can hand out accounts.
+ * The five ways the pool can hand out accounts.
  *
  * Order is the reading order of the picker: the recommended mode first, then
- * the two cache-friendly extremes, then the two spreading modes.
+ * the two cache-friendly extremes, then the two spreading modes. The row is
+ * laid out one chip per mode, so this list length is also the column count.
  */
-const DIST_OPTIONS = ['sticky', 'priority', 'balanced', 'round-robin'] as const
+const DIST_OPTIONS = ['sticky', 'priority', 'balanced', 'round-robin', 'expiry'] as const
 
 type DistTranslator = PoolCardInjected['t'] | undefined
 
@@ -203,6 +206,7 @@ function distLabel(option: PoolDistribution, t: DistTranslator): string {
   if (option === 'sticky') return t?.('row.distSticky') ?? 'Per conversation'
   if (option === 'priority') return t?.('row.distPriority') ?? 'Priority'
   if (option === 'balanced') return t?.('row.distBalanced') ?? 'Balanced'
+  if (option === 'expiry') return t?.('row.distExpiry') ?? 'Expiring first'
   return t?.('row.distRoundRobin') ?? 'Round-robin'
 }
 
@@ -211,6 +215,7 @@ function distHint(option: PoolDistribution, t: DistTranslator): string {
   if (option === 'sticky') return t?.('row.distStickyHint') ?? ''
   if (option === 'priority') return t?.('row.distPriorityHint') ?? ''
   if (option === 'balanced') return t?.('row.distBalancedHint') ?? ''
+  if (option === 'expiry') return t?.('row.distExpiryHint') ?? ''
   return t?.('row.distRoundRobinHint') ?? ''
 }
 
@@ -1004,11 +1009,16 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                                     </span>
                                   : null}
                               </span>
-                              <span className="dsm-workbuddy-xdpool-dist-option-hint">{hint}</span>
                             </button>
                           )
                         })}
                         </div>
+                        {/* One sentence for the mode that is actually on. Five
+                            chips carrying five sentences each is five paragraphs;
+                            this keeps the row a row and still explains the choice. */}
+                        <p className="dsm-workbuddy-xdpool-dist-hint">
+                          {distHint(status.distribution ?? 'priority', t)}
+                        </p>
                       </div>}
                 </div>
                 <div className="dsm-workbuddy-xdpool-usage-actions">
@@ -1251,6 +1261,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                       <AccountBlock
                         key={account.id}
                         account={account}
+                        models={status?.models ?? []}
                         {...checkinBusyId === undefined ? {} : { checkinBusyId }}
                         onClaimCheckin={(accountId) => { void claimCheckin(accountId) }}
                         onSaveCreditReserve={(accountId, reserve) => saveCreditReserve(accountId, reserve)}
@@ -1370,6 +1381,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                           key={model.id}
                           model={model}
                           region={activeRegion}
+                          paidTwin={paidAlternativeFor(model, status?.models ?? [])}
                           t={t}
                           draft={modelDraft[model.id] ?? { enabled: model.enabled, images: model.supportsImages }}
                           editable={modelsEditable}
@@ -1388,6 +1400,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
 /** One account block: label + status tag + meta + optional credit panels. */
 function AccountBlock({
   account,
+  models,
   t,
   checkinBusyId,
   onClaimCheckin,
@@ -1398,6 +1411,12 @@ function AccountBlock({
   reserveBusyId,
 }: {
   account: PoolWebAccount
+  /**
+   * The current catalog, so a per-model cooldown can name the paid row of the
+   * cooling model. Same roster the model list above is drawn from — a hint
+   * built from a different list could name an id this gateway does not serve.
+   */
+  models: readonly PoolWebModel[]
   t?: PoolCardProps['t']
   /** Account id whose claim is in flight, if any. */
   checkinBusyId?: string
@@ -1413,6 +1432,7 @@ function AccountBlock({
 }) {
   const isDisabled = account.disabled === true
   const isCooling = account.cooling === true
+  const isDead = account.credentialDead === true
   const cooldownUntil = account.cooldownUntil !== undefined ? Date.parse(account.cooldownUntil) : undefined
   const modelCooldowns = account.modelCooldowns ?? []
 
@@ -1424,9 +1444,14 @@ function AccountBlock({
   // knowable from here. `balanced` draws at random, `round-robin` walks a
   // cursor, and the old flag only ever meant "highest-priority eligible" —
   // which is not the same thing, and did not account for disabled accounts.
-  const tag = isCooling
-    ? { text: t?.('row.cooling') ?? 'Cooling', cls: 'dsm-workbuddy-xdpool-account-tag dsm-workbuddy-xdpool-account-tag-cooling' }
-    : null
+  //
+  // A rejected sign-in outranks "cooling": a cooldown lifts on its own, this
+  // one needs the user to sign in again, so it is the more useful thing to say.
+  const tag = isDead
+    ? { text: t?.('row.credentialDeadTag') ?? 'Sign-in rejected', cls: 'dsm-workbuddy-xdpool-account-tag dsm-workbuddy-xdpool-account-tag-dead' }
+    : isCooling
+      ? { text: t?.('row.cooling') ?? 'Cooling', cls: 'dsm-workbuddy-xdpool-account-tag dsm-workbuddy-xdpool-account-tag-cooling' }
+      : null
 
   return (
     <div className={isDisabled ? 'dsm-workbuddy-xdpool-account dsm-workbuddy-xdpool-account-off' : 'dsm-workbuddy-xdpool-account'}>
@@ -1478,14 +1503,33 @@ function AccountBlock({
                   ?? `${account.rateLimitHits ?? 0} hit(s)`}
               </span>
             : null}
+          {isDead
+            ? <span className="dsm-workbuddy-xdpool-account-meta dsm-workbuddy-xdpool-account-meta-dead">
+                {t?.('row.credentialDeadHint') ?? 'Sign in again in the WorkBuddy desktop app to restore it'}
+              </span>
+            : null}
           {modelCooldowns.length > 0
             ? <div className="dsm-workbuddy-xdpool-account-modelcool">
-                {modelCooldowns.map(mc => (
-                  <span key={mc.modelId} className="dsm-workbuddy-xdpool-account-modelcool-chip">
-                    {t?.('row.modelCooling', { model: mc.modelId, time: formatDateTime(mc.until) })
-                      ?? `${mc.modelId} cooling to ${formatDateTime(mc.until)}`}
-                  </span>
-                ))}
+                {modelCooldowns.map(mc => {
+                  // Each row of a product line is rate-limited on its own, so a
+                  // cooling free row usually has a paid twin that still serves.
+                  // Saying so here turns "wait until 10:14" into a choice.
+                  const coolingModel = models.find(model => model.id === mc.modelId)
+                  const twin = coolingModel === undefined
+                    ? undefined
+                    : paidAlternativeFor(coolingModel, models)
+                  return (
+                    <span key={mc.modelId} className="dsm-workbuddy-xdpool-account-modelcool-chip">
+                      {t?.('row.modelCooling', { model: mc.modelId, time: formatDateTime(mc.until) })
+                        ?? `${mc.modelId} cooling to ${formatDateTime(mc.until)}`}
+                      {twin === undefined ? null
+                        : <span className="dsm-workbuddy-xdpool-account-modelcool-twin" title={t?.('row.paidTwinHint') ?? 'Same model, paid row'}>
+                            {t?.('row.rateLimitedPaidTwin', { id: twin.id, rate: twin.multiplier.toFixed(2) })
+                              ?? `→ ${twin.id} (${twin.multiplier.toFixed(2)}x) still works`}
+                          </span>}
+                    </span>
+                  )
+                })}
               </div>
             : null}
         </div>
@@ -1707,7 +1751,18 @@ function AccountStats({
           {t?.('row.creditsPackages') ?? 'Credit packages'}
         </span>
         {account.creditsError !== undefined
-          ? <span className="dsm-workbuddy-xdpool-panel-error">{account.creditsError}</span>
+          // The upstream error is a full English paragraph (it explains HOW to
+          // recover). Printed inline it blew the panel up to several lines and
+          // pushed "Total" off screen, so the panel shows a short marker and the
+          // full text lives in the tooltip / title attribute.
+          ? <span
+              className={`dsm-workbuddy-xdpool-panel-error${account.credentialDead === true ? ' dsm-workbuddy-xdpool-panel-error-dead' : ''}`}
+              title={account.creditsError}
+            >
+              {account.credentialDead === true
+                ? t?.('row.credentialDead') ?? 'Sign-in rejected'
+                : t?.('row.creditsError') ?? 'credits unavailable'}
+            </span>
           : packages.length === 0
             ? <span className="dsm-workbuddy-xdpool-panel-empty">–</span>
             : <ul className="dsm-workbuddy-xdpool-packages">
@@ -1757,8 +1812,11 @@ function AccountStats({
         {hasCheckin
           ? <div className="dsm-workbuddy-xdpool-checkin">
               {account.checkinError !== undefined
-                ? <span className="dsm-workbuddy-xdpool-checkin-error">
-                    {account.checkinError}
+                /* Folded to a marker with the full text in the tooltip, exactly
+                   like the credits error above. A gateway rejection is a whole
+                   paragraph; printed inline it buries the panel it belongs to. */
+                ? <span className="dsm-workbuddy-xdpool-checkin-error" title={account.checkinError}>
+                    {t?.('row.checkinUnavailable') ?? 'check-in unavailable'}
                   </span>
                 : checkin === undefined
                   ? null
@@ -1815,6 +1873,7 @@ function AccountStats({
 function ModelRow({
   model,
   region,
+  paidTwin,
   t,
   draft,
   editable,
@@ -1825,6 +1884,12 @@ function ModelRow({
   model: PoolWebModel
   /** Which gateway this row belongs to; the promo campaigns are regional. */
   region: 'cn' | 'global'
+  /**
+   * The cheapest priced row sharing this model's display name, when this row
+   * itself is free. Undefined for paid rows and for lone models — see
+   * {@link paidAlternativeFor} for why the guard matters.
+   */
+  paidTwin: PaidSibling | undefined
   t?: PoolCardProps['t']
   draft: ModelDraftEntry
   editable: boolean
@@ -1937,6 +2002,11 @@ function ModelRow({
           : <span className="dsm-workbuddy-xdpool-model-meta-later">{laterHint}</span>}
         {promoUntil === null ? null
           : <span className="dsm-workbuddy-xdpool-model-meta-promo">{promoUntil}</span>}
+        {paidTwin === undefined ? null
+          : <span className="dsm-workbuddy-xdpool-model-meta-twin" title={t?.('row.paidTwinHint') ?? 'Same model, paid row'}>
+              {t?.('row.paidTwin', { id: paidTwin.id, rate: paidTwin.multiplier.toFixed(2) })
+                ?? `paid twin ${paidTwin.id} (${paidTwin.multiplier.toFixed(2)}x)`}
+            </span>}
         <span className="dsm-workbuddy-xdpool-model-cap">
           {t?.('row.modelOutput', { size: formatCapacity(model.maxOutputTokens) })
             ?? `out ${formatCapacity(model.maxOutputTokens)}`}

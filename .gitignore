@@ -28,3 +28,9 @@ _backup-lib-*/
 # `pnpm pack` 的产物：本地安装/验证用的，包里其实就是 lib/ 那份
 *.tgz
 .workbuddy/
+
+# 受限环境里跑测试/构建时的临时目录（vitest 与 rolldown-plugin-dts 都要写
+# %TEMP%，而某些沙箱只允许写工作区）：
+#   TEMP=$PWD/.tmp TMP=$PWD/.tmp TMPDIR=$PWD/.tmp pnpm test
+.tmp/
+.vitest-tmp/

@@ -87,8 +87,17 @@ export const POOL_CARD_CSS = `
 /* "now: X" — repeats the answer in the header so the user does not have to
    scan four cards for the raised one. */
 .dsm-workbuddy-xdpool-dist-now{flex:none;padding:2px 10px;border-radius:999px;border:1px solid color-mix(in oklab, var(--dsw-alias-label-primary,#e6e6e6) 26%, transparent);background:color-mix(in oklab, var(--dsw-alias-label-primary,#e6e6e6) 10%, transparent);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
-.dsm-workbuddy-xdpool-dist-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.dsm-workbuddy-xdpool-dist-option{appearance:none;font:inherit;cursor:pointer;text-align:left;display:flex;flex-direction:column;justify-content:center;gap:4px;min-height:62px;border:1px solid color-mix(in oklab, var(--dsw-alias-border-l2,#3a3d45) 80%, transparent);border-radius:12px;padding:9px 13px;background:transparent;color:var(--dsw-alias-label-tertiary,#9aa0a8);transition:color .16s,border-color .16s,background .16s,box-shadow .16s}
+/* One row of equal chips, and let the row itself decide when it has to break.
+   flex-wrap plus a 112px basis keeps the five modes side by side for as long as
+   the card can hold them (a chip is ~112px: the longest label plus padding), so
+   a 700px panel still reads as one row of choices instead of a hard 760px cliff
+   dropping it to two columns. A flex line stretches its items to fill the row,
+   so when the chips finally do wrap, the odd last one spans the width on its own
+   — no last-child span rule, and therefore no way to accidentally strand the
+   last chip on a second row while the first row was still wide enough for all
+   five. */
+.dsm-workbuddy-xdpool-dist-options{display:flex;flex-wrap:wrap;gap:8px}
+.dsm-workbuddy-xdpool-dist-option{flex:1 1 112px;min-width:0;appearance:none;font:inherit;cursor:pointer;text-align:left;display:flex;flex-direction:column;justify-content:center;gap:3px;min-height:46px;border:1px solid color-mix(in oklab, var(--dsw-alias-border-l2,#3a3d45) 80%, transparent);border-radius:12px;padding:9px 11px;background:transparent;color:var(--dsw-alias-label-tertiary,#9aa0a8);transition:color .16s,border-color .16s,background .16s,box-shadow .16s}
 .dsm-workbuddy-xdpool-dist-option:hover:not(:disabled):not(.dsm-workbuddy-xdpool-dist-option-active){color:var(--dsw-alias-label-secondary,#c6c9d0);border-color:var(--dsw-alias-label-dimmed,#777);background:rgba(255,255,255,.03)}
 .dsm-workbuddy-xdpool-dist-option:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 /* Selected: raised onto layer-3 (the same surface the region tabs use when
@@ -97,11 +106,15 @@ export const POOL_CARD_CSS = `
 .dsm-workbuddy-xdpool-dist-option-active{background:var(--dsw-alias-bg-layer-3,#2a2c33);border-color:color-mix(in oklab, var(--dsw-alias-label-primary,#e6e6e6) 34%, transparent);box-shadow:inset 3px 0 0 var(--dsw-alias-label-primary,#e6e6e6);color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-xdpool-dist-option-active .dsm-workbuddy-xdpool-dist-option-name{color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-workbuddy-xdpool-dist-option:disabled{cursor:default;opacity:.6}
-.dsm-workbuddy-xdpool-dist-option-top{display:flex;align-items:center;gap:7px;min-width:0}
-.dsm-workbuddy-xdpool-dist-option-name{font-size:12.5px;line-height:18px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsm-workbuddy-xdpool-dist-option-top{display:flex;align-items:center;gap:6px;min-width:0}
+/* The name is the only thing in a chip, so it may wrap rather than ellipsize:
+   a truncated mode name is unreadable, a two-line one is merely taller. */
+.dsm-workbuddy-xdpool-dist-option-name{font-size:12.5px;line-height:17px;font-weight:600;min-width:0;overflow-wrap:anywhere}
 /* "recommended" chip: quiet, and only on the mode this release argues for. */
-.dsm-workbuddy-xdpool-dist-option-badge{flex:none;margin-left:auto;padding:1px 7px;border-radius:999px;background:var(--dsw-alias-state-success-subtle,rgba(34,160,107,.14));color:var(--dsw-alias-state-success-primary,#22a06b);font-size:10px;font-weight:600;line-height:15px;white-space:nowrap}
-.dsm-workbuddy-xdpool-dist-option-hint{font-size:11px;line-height:16px;opacity:.85}
+.dsm-workbuddy-xdpool-dist-option-badge{flex:none;margin-left:auto;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-state-success-subtle,rgba(34,160,107,.14));color:var(--dsw-alias-state-success-primary,#22a06b);font-size:10px;font-weight:600;line-height:15px;white-space:nowrap}
+/* One line of prose under the row explains the mode that is selected. Five
+   chips cannot each carry a sentence without becoming five paragraphs. */
+.dsm-workbuddy-xdpool-dist-hint{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:11px;line-height:16px}
 .dsm-workbuddy-xdpool-usage-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 /* Account list (each account = a labeled subpanel, same as dingminhua). */
@@ -154,9 +167,17 @@ export const POOL_CARD_CSS = `
 .dsm-workbuddy-xdpool-account-tag{padding:1px 8px;border-radius:999px;font-size:11px;line-height:18px;background:var(--dsw-alias-state-success-subtle,rgba(34,160,107,.12));color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-workbuddy-xdpool-account-tag-cooling{background:var(--dsw-alias-state-warning-subtle,rgba(217,119,6,.15));color:var(--dsw-alias-state-warning-primary,#d97706)}
 .dsm-workbuddy-xdpool-account-tag-error{background:var(--dsw-alias-state-error-subtle,rgba(239,68,68,.12));color:var(--dsw-alias-state-error-primary,#ef4444)}
+/* A rejected sign-in is red, not amber: unlike a cooldown it will not clear by
+   waiting, and it is the one state where the user has to go do something. */
+.dsm-workbuddy-xdpool-account-tag-dead{background:var(--dsw-alias-state-error-subtle,rgba(239,68,68,.12));color:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-workbuddy-xdpool-account-meta{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px;display:flex;flex-wrap:wrap;gap:10px}
+.dsm-workbuddy-xdpool-account-meta-dead{color:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-workbuddy-xdpool-account-modelcool{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
 .dsm-workbuddy-xdpool-account-modelcool-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:999px;font-size:11px;line-height:18px;background:var(--dsw-alias-state-warning-subtle,rgba(217,119,6,.12));color:var(--dsw-alias-state-warning-primary,#d97706)}
+/* "→ deepseek-v4.1-flash-sg (0.03x) still works" inside a cooling chip. Keeps
+   the warning tint of its parent but drops the weight: it is the way out, not
+   a second problem. */
+.dsm-workbuddy-xdpool-account-modelcool-twin{color:var(--dsw-alias-label-secondary,#c6c9d0);cursor:help}
 .dsm-workbuddy-xdpool-account-error{margin:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:13px;line-height:20px}
 
 /* Two-column stats: packages on the left, total + check-in on the right. */
@@ -165,6 +186,9 @@ export const POOL_CARD_CSS = `
 .dsm-workbuddy-xdpool-panel-title{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px;letter-spacing:.03em;text-transform:uppercase;font-weight:600}
 .dsm-workbuddy-xdpool-panel-empty{color:var(--dsw-alias-label-tertiary,#999);font-size:14px;line-height:20px}
 .dsm-workbuddy-xdpool-panel-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;word-break:break-word}
+/* A rejected sign-in gets a compact chip: the upstream paragraph is long, and
+   printed inline it pushed the neighbouring "Total" panel off screen. */
+.dsm-workbuddy-xdpool-panel-error-dead{display:inline-flex;align-items:center;align-self:flex-start;padding:1px 8px;border-radius:999px;background:var(--dsw-alias-state-error-subtle,rgba(239,68,68,.12));font-size:11px;line-height:18px;white-space:nowrap;cursor:help}
 .dsm-workbuddy-xdpool-panel-foot{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:9px;padding-top:9px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:12px;line-height:18px}
 .dsm-workbuddy-xdpool-panel-foot strong{color:var(--dsw-alias-label-primary,#e6e6e6);font-size:15px;font-variant-numeric:tabular-nums}
 .dsm-workbuddy-xdpool-packages{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}
@@ -205,6 +229,10 @@ export const POOL_CARD_CSS = `
 /* "活动至 10-31": the campaign's end date. Muted — it is context for planning,
    not a claim about the current price. */
 .dsm-workbuddy-xdpool-model-meta-promo{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:11px;line-height:16px;opacity:.85}
+/* "付费同款 deepseek-v4.1-flash-sg (0.03x)": the way out when the free row is
+   rate-limited. Muted like the other meta chips — it is an alternative, not a
+   warning, and the row it sits on is still the free one. */
+.dsm-workbuddy-xdpool-model-meta-twin{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:11px;line-height:16px;opacity:.85;cursor:help}
 /* Unreadable credential files: a warning tint, since it explains a smaller pool
    and "encrypted" is actionable (start the app once). */
 .dsm-workbuddy-xdpool-skipped{margin:6px 0 0;padding:7px 10px;border-radius:8px;background:var(--dsw-alias-state-warning-subtle,rgba(217,119,6,.12));display:flex;flex-direction:column;gap:3px}
@@ -260,9 +288,8 @@ export const POOL_CARD_CSS = `
   .dsm-workbuddy-xdpool-checkin{align-items:stretch}
   .dsm-workbuddy-xdpool-checkin-meta{align-items:flex-start}
   .dsm-workbuddy-xdpool-checkin-bonus{text-align:left}
-  /* One mode per row: at this width a two-up grid leaves ~150px per card, and
-     the hint sentence wraps to four lines. */
-  .dsm-workbuddy-xdpool-dist-options{grid-template-columns:minmax(0,1fr)}
+  /* The chips wrap on their own (auto-fit), so the only thing left to do here
+     is stop reserving desktop height for rows that are now one chip tall. */
   .dsm-workbuddy-xdpool-dist-option{min-height:0}
 }
 

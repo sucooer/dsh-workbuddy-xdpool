@@ -811,6 +811,20 @@ interface WorkBuddyAccount {
   modelCooldowns: Record<string, number>;
   /** Consecutive rate-limit hits, for diagnostics. */
   rateLimitHits: number;
+  /**
+   * Epoch ms until which this account is skipped because the upstream REJECTED
+   * its sign-in (401/403), not because of a rate limit.
+   *
+   * A revoked session is invisible from the credential file: the upstream does
+   * not rewrite `expiresAtMs` when it kills a refresh token, so a dead account
+   * looks perfectly fresh and, without this field, gets picked again on the very
+   * next attempt. With `maxAttempts` retries that meant one dead account could
+   * absorb an entire request while healthy accounts were never tried.
+   *
+   * Only a fresh sign-in in the desktop app clears it, so the cooldown is long;
+   * `0`/undefined means "not known to be dead".
+   */
+  credentialDeadUntilMs?: number;
 }
 /**
  * Platform-default directories holding the desktop app's auth files.
@@ -832,7 +846,7 @@ export declare function workbuddyAccountId(credential: Pick<WorkBuddyCredential,
 /** Every directory the pool should scan, in probe order. */
 export declare function candidateAuthDirs(env?: NodeJS.ProcessEnv): string[];
 /** How the pool chooses which account serves the next request. */
-type AccountDistribution = 'priority' | 'round-robin' | 'balanced' | 'sticky';
+type AccountDistribution = 'priority' | 'round-robin' | 'balanced' | 'sticky' | 'expiry';
 interface AccountPoolOptions {
   /** Logger for discovery and rotation events. */
   logger?: {
@@ -846,6 +860,11 @@ interface AccountPoolOptions {
   cooldownMs?: number;
   /** How long an account rests after its credits run out (default 30 minutes). */
   exhaustCooldownMs?: number;
+  /**
+   * How long an account rests after the upstream rejects its sign-in
+   * (default 30 minutes). Only a fresh sign-in in the desktop app clears it.
+   */
+  credentialDeadCooldownMs?: number;
   /** Upstream client used to refresh near-expiry tokens. */
   client?: TokenRefresher;
   /** Refresh this long before actual expiry; default five minutes. */
@@ -862,6 +881,10 @@ interface AccountPoolOptions {
    * - `sticky`: one account per conversation, and a new conversation moves to
    *   the next account in order. Keeps the upstream prompt cache warm inside a
    *   conversation while still spreading spend across conversations.
+   * - `expiry`: the account whose one-off credit packs expire soonest serves
+   *   first, so use-it-or-lose-it credits are spent before they die. Accounts
+   *   with no known expiry sort last, so a pool that has never been probed
+   *   behaves like `priority`.
    */
   distribution?: AccountDistribution;
 }
@@ -875,6 +898,11 @@ export declare class WorkBuddyAccountPool {
    * rate-limit window, so this is much longer than `cooldownMs`.
    */
   private exhaustCooldownMs;
+  /**
+   * How long an account stays out of rotation after the upstream rejected its
+   * sign-in. Cleared by a newer credential file or an explicit sign-in.
+   */
+  private credentialDeadCooldownMs;
   private readonly client;
   private readonly refreshMarginMs;
   private accounts;
@@ -941,6 +969,19 @@ export declare class WorkBuddyAccountPool {
    * strand a healthy pool, and the first 402 still cools it as before.
    */
   private creditBalances;
+  /**
+   * Nearest expiry among each account's one-off credit packs, epoch ms.
+   *
+   * Credit packs are use-it-or-lose-it, so "which account should serve next"
+   * has a second honest answer besides "which one is idle": the one whose
+   * credits die soonest. Only one-off packs count — monthly packs refresh on
+   * their own cycle and are therefore never urgent — which is why this is
+   * written from the same `fetchCredits` reading that fills `creditBalances`.
+   *
+   * An absent entry means "never probed, or nothing is about to expire". Both
+   * are the same thing to `expiry` mode: not urgent, so it sorts last.
+   */
+  private creditExpiry;
   /**
    * Last time each account served a request, epoch ms. Drives the idle term
    * of the priority-mode weighting below: an account that just served loses to
@@ -1019,7 +1060,9 @@ export declare class WorkBuddyAccountPool {
     total: number;
     cooling: number;
     disabled: number;
-    reason: 'empty' | 'cooling' | 'disabled' | 'reserve' | 'none';
+    /** Accounts skipped because the upstream rejected their sign-in. */
+    dead: number;
+    reason: 'empty' | 'cooling' | 'disabled' | 'reserve' | 'session_dead' | 'none';
   };
   /** Round-robin: the legacy cursor walk, kept for the distribution that asks for it. */
   private pickRoundRobin;
@@ -1054,6 +1097,21 @@ export declare class WorkBuddyAccountPool {
    */
   private pickByWeight;
   /**
+   * `expiry` mode: the account whose one-off credit packs die soonest.
+   *
+   * Credit packs are use-it-or-lose-it, so spending the dying ones first is
+   * strictly better than spreading the spend: an account that expires with
+   * credits left is money burnt, while an account whose packs have no deadline
+   * loses nothing by waiting. Two accounts expiring at the same instant fall
+   * back to the pool order, and an account with no known expiry sorts last —
+   * "we have not looked" must never outrank a real deadline.
+   *
+   * A pool where nobody has a known expiry therefore behaves exactly like
+   * priority, which is the honest degradation: without a reading there is
+   * nothing to sort by.
+   */
+  private pickByExpiry;
+  /**
    * Pick the account to serve a request.
    *
    * Two distributions, chosen by the `distribution` setting:
@@ -1068,6 +1126,8 @@ export declare class WorkBuddyAccountPool {
    * - **sticky**: one account per conversation, and a new conversation moves to
    *   the next account in order. Keeps the upstream prompt cache warm within a
    *   conversation while still spreading spend across conversations.
+   * - **expiry**: the account whose one-off credit packs expire soonest serves
+   *   first, so use-it-or-lose-it credits are spent before they vanish.
    *
    * In every mode an explicit user selection (`prefer`) heads the list, a
    * cooling account is skipped for that model only, and an unrecognised setting
@@ -1103,8 +1163,16 @@ export declare class WorkBuddyAccountPool {
    * check has something to compare against. A reading for an unknown account is
    * dropped: `scan()` rebuilds the account list and a stale id would otherwise
    * accumulate forever.
+   *
+   * `nearestExpiryMs` is the same reading's nearest one-off pack deadline, or
+   * undefined when nothing is about to expire. It is written through, not
+   * merged: a pack that has been spent or has died disappears from the next
+   * reading, and keeping the stale deadline would pin the pool to an account
+   * whose credits are already gone — the opposite of what `expiry` mode wants.
    */
-  noteCredits(accountId: string, balance: number): void;
+  noteCredits(accountId: string, balance: number, nearestExpiryMs?: number): void;
+  /** Nearest one-off pack expiry for one account, or undefined when none known. */
+  creditExpiryOf(accountId: string): number | undefined;
   /** Last known balance for one account, or undefined when never read. */
   creditsOf(accountId: string): number | undefined;
   /** The credit floor the user set for one account; 0 when unset. */
@@ -1136,12 +1204,37 @@ export declare class WorkBuddyAccountPool {
    */
   lastServedId(): string | undefined;
   /** Best-effort refresh of one account after a session-dead upstream answer. */
-  refreshAccount(accountId: string): Promise<void>;
+  refreshAccount(accountId: string, options?: {
+    force?: boolean;
+  }): Promise<boolean>;
+  /**
+   * Cool a whole account because the upstream REJECTED its sign-in (401/403).
+   *
+   * Called with direct evidence (the request just came back `session_dead`), so
+   * it does not need to guess: without this, the next retry of the SAME request
+   * picks the same account again — its credential file still claims to be valid
+   * — and a request with 8 attempts spends all 8 on one dead account while
+   * healthy accounts are never tried.
+   */
+  penalizeCredentialDead(accountId: string): void;
+  /** Put an account back in rotation after its sign-in was proven good again. */
+  clearCredentialDead(accountId: string): void;
+  /** Accounts currently kept out of rotation because their sign-in was rejected. */
+  deadCredentials(): readonly WorkBuddyAccount[];
   /**
    * Refresh the account's access token when it is within the margin (or already
    * expired), in-flight de-duped per account. A failed refresh keeps the
    * existing token when it has not yet expired, so an unreachable refresh
    * endpoint never takes down a working session.
+   *
+   * `force` skips the "is it expiring?" gate. That gate is a cost optimisation,
+   * not a correctness rule: it exists so a healthy token is not re-fetched on
+   * every acquire. After the upstream has ALREADY rejected the token, the gate
+   * is actively wrong — a revoked token keeps its future `expiresAtMs` — and the
+   * caller needs the refresh attempted so the credential can be proven dead.
+   *
+   * Returns true when the token is known good afterwards (refreshed, or still
+   * valid), false when the credential was proven dead.
    */
   private ensureFresh;
   /**
@@ -1169,6 +1262,7 @@ export declare class WorkBuddyAccountPool {
   status(): {
     count: number;
     cooling: number;
+    dead: number;
     lastScanAtMs: number;
   };
 }
@@ -1219,6 +1313,15 @@ interface PoolWebAccount {
   cooling: boolean;
   /** ISO timestamp when the account-wide 429 cooldown lifts; only while cooling. */
   cooldownUntil?: string;
+  /**
+   * The upstream REJECTED this account's sign-in (401/403) — the credential file
+   * still looks valid because the upstream never rewrites its expiry when it
+   * revokes a token. Distinct from `cooling`: waiting does not fix it, only
+   * signing in again in the desktop app does.
+   */
+  credentialDead?: boolean;
+  /** ISO timestamp when the dead mark expires and the account is retried; only while `credentialDead`. */
+  credentialDeadUntil?: string;
   /**
    * Per-model cooldowns currently active. The account is NOT `cooling` while a
    * model is limited — its other models still serve — but each entry tells the
@@ -1547,7 +1650,7 @@ interface PoolWebAutomationEarnings {
  */
 type PoolRegion = 'cn' | 'global';
 /** How the pool spreads requests across its accounts. */
-type PoolDistribution = 'priority' | 'round-robin' | 'balanced' | 'sticky';
+type PoolDistribution = 'priority' | 'round-robin' | 'balanced' | 'sticky' | 'expiry';
 /**
  * The schedule every automation job falls back to.
  *
@@ -2542,10 +2645,13 @@ export interface Config {
    *   conversation throws away the upstream prompt cache (it is per tenant), so
    *   this keeps the cache warm while still spreading spend across
    *   conversations.
+   * - `expiry` picks the account whose one-off credit packs expire soonest, so
+   *   use-it-or-lose-it credits are spent before they die. Accounts with no
+   *   known expiry sort last, so an unprobed pool degrades to `priority`.
    *
    * Absent reads as `priority`.
    */
-  distribution?: 'priority' | 'round-robin' | 'balanced' | 'sticky';
+  distribution?: 'priority' | 'round-robin' | 'balanced' | 'sticky' | 'expiry';
   /**
    * Account ids switched off on the card. A disabled account is never picked
    * to serve a request, but it stays in the pool and on the card so it can be
